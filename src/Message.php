@@ -8,11 +8,16 @@ namespace Recodive\Hansho;
  * A notification, or a page when the level is Level::Page.
  *
  * `data` is sent as given (keys are never renamed); pass a stdClass for an empty JSON object.
+ *
+ * Give exactly one target: `externalUserId`, `externalUserIds` (at most 1000) or `toAudience` (every paired user in the
+ * channel's audience, resolved when you send). `externalUserId` stays first, so pass null for the other two:
+ * `new Message(null, 'ops', 'T', 'B', toAudience: true)`. Users outside the audience are not delivered to; see
+ * MessageResult::$recipients.
  */
 final class Message
 {
     public function __construct(
-        public readonly string $externalUserId,
+        public readonly ?string $externalUserId,
         public readonly string $channel,
         public readonly string $title,
         public readonly string $body,
@@ -31,6 +36,9 @@ final class Message
          * The hub ignores it today, so a retried send is at-least-once.
          */
         public readonly ?string $idempotencyKey = null,
+        /** @var list<string>|null */
+        public readonly ?array $externalUserIds = null,
+        public readonly bool $toAudience = false,
     ) {
     }
 }

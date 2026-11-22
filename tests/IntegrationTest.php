@@ -45,6 +45,12 @@ final class IntegrationTest extends TestCase
     protected function tearDown(): void
     {
         if (is_resource($this->receiver)) {
+            // PHP_CLI_SERVER_WORKERS makes the server fork workers; terminating only the parent orphans them, and they keep
+            // the webhook port bound. Stop the workers first, while they are still children.
+            $pid = proc_get_status($this->receiver)['pid'];
+            if ($pid > 0) {
+                @exec('pkill -TERM -P ' . $pid . ' 2>/dev/null');
+            }
             proc_terminate($this->receiver);
             proc_close($this->receiver);
         }

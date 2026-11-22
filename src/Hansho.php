@@ -82,6 +82,16 @@ final class Hansho
         $this->json('DELETE', '/api/v1/users/' . self::seg($externalUserId) . '/pairings');
     }
 
+    /**
+     * Ends the user's whole pairing, on every device. It is unpair() under its sender-side name: the app tells the person
+     * that the sender ended it (a 401 pairing_revoked with reason "kicked"), where an unpair they did themselves carries
+     * no reason. There is no block list; a new ticket pairs them again.
+     */
+    public function kick(string $externalUserId): void
+    {
+        $this->unpair($externalUserId);
+    }
+
     // --- catalog -------------------------------------------------------------
 
     public function putChannel(string $id, Channel $channel): void
@@ -94,6 +104,7 @@ final class Hansho
             'template_id' => $channel->templateId,
             'thread' => $channel->thread,
             'actions' => self::actionsToWire($channel->actions),
+            'audience' => self::audienceToWire($channel->audience),
         ]));
     }
 
@@ -109,12 +120,38 @@ final class Hansho
             isset($w['template_id']) && is_string($w['template_id']) ? $w['template_id'] : null,
             isset($w['thread']) && is_string($w['thread']) ? $w['thread'] : null,
             isset($w['actions']) && is_array($w['actions']) ? array_values(array_map(self::actionFromWire(...), $w['actions'])) : null,
+            self::audienceFromWire($w['audience'] ?? null),
         );
     }
 
     public function deleteChannel(string $id): void
     {
         $this->json('DELETE', '/api/v1/channels/' . self::seg($id));
+    }
+
+    /**
+     * Creates a group or replaces its whole member list (external user ids, who may not have paired yet). Audiences that
+     * name the group follow at once. Ids match [A-Za-z0-9][A-Za-z0-9_-]{0,63}.
+     *
+     * @param list<string> $members
+     */
+    public function putGroup(string $id, array $members): Group
+    {
+        $w = $this->json('PUT', '/api/v1/groups/' . self::seg($id), ['members' => array_values($members)]);
+
+        return self::groupFromWire($w, $id);
+    }
+
+    /** A missing group is an ApiException with apiCode ApiException::UNKNOWN_GROUP. */
+    public function getGroup(string $id): Group
+    {
+        return self::groupFromWire($this->json('GET', '/api/v1/groups/' . self::seg($id)), $id);
+    }
+
+    /** An audience that still names the group matches nobody through it. */
+    public function deleteGroup(string $id): void
+    {
+        $this->json('DELETE', '/api/v1/groups/' . self::seg($id));
     }
 
     /**
@@ -148,6 +185,8 @@ final class Hansho
     {
         $body = self::defined([
             'external_user_id' => $m->externalUserId,
+            'external_user_ids' => $m->externalUserIds === null ? null : array_values($m->externalUserIds),
+            'to_audience' => $m->toAudience ? true : null,
             'channel' => $m->channel,
             'level' => $m->level === null ? null : self::level($m->level),
             'title' => $m->title,
@@ -180,6 +219,7 @@ final class Hansho
             self::int($w, 'devices'),
             self::str($w, 'status'),
             self::deliveries($w['deliveries'] ?? null),
+            self::recipients($w['recipients'] ?? null),
         );
     }
 
@@ -229,12 +269,38 @@ final class Hansho
         $this->json('DELETE', '/api/v1/activities/' . self::seg($id));
     }
 
+    /**
+     * Reads a feed's settings without its data. Omit $externalUserId for the feed shared by all users; a missing feed is
+     * an ApiException with apiCode 'unknown_feed'.
+     */
+    public function getFeed(string $id, ?string $externalUserId = null): FeedSettings
+    {
+        $path = '/api/v1/feeds/' . self::seg($id);
+        if ($externalUserId !== null && $externalUserId !== '') {
+            $path .= '?external_user_id=' . rawurlencode($externalUserId);
+        }
+        $w = $this->json('GET', $path);
+        $str = static fn (string $k): ?string => isset($w[$k]) && is_string($w[$k]) && $w[$k] !== '' ? $w[$k] : null;
+
+        return new FeedSettings(
+            self::str($w, 'feed_id'),
+            self::str($w, 'template_id'),
+            $str('external_user_id'),
+            $str('title'),
+            $str('channel'),
+            self::audienceFromWire($w['audience'] ?? null),
+            self::int($w, 'updated_at'),
+        );
+    }
+
     public function putFeed(string $id, Feed $feed): FeedResult
     {
         $w = $this->json('PUT', '/api/v1/feeds/' . self::seg($id), self::defined([
             'external_user_id' => $feed->externalUserId,
             'template_id' => $feed->templateId,
             'title' => $feed->title,
+            'channel' => $feed->channel,
+            'audience' => self::audienceToWire($feed->audience),
             'data' => $feed->data,
         ]));
 
@@ -404,6 +470,56 @@ final class Hansho
     private static function alertToWire(?ActivityAlert $a): ?array
     {
         return $a === null ? null : self::defined(['title' => $a->title, 'body' => $a->body]);
+    }
+
+    /** @return array<string,mixed>|null */
+    private static function audienceToWire(?Audience $a): ?array
+    {
+        return $a === null ? null : self::defined([
+            'mode' => $a->mode instanceof AudienceMode ? $a->mode->value : $a->mode,
+            'users' => $a->users === [] ? null : array_values($a->users),
+            'groups' => $a->groups === [] ? null : array_values($a->groups),
+        ]);
+    }
+
+    private static function audienceFromWire(mixed $w): ?Audience
+    {
+        if (!is_array($w)) {
+            return null;
+        }
+        $list = static fn (mixed $v): array => is_array($v) ? array_values(array_map('strval', array_filter($v, 'is_scalar'))) : [];
+
+        return new Audience(self::str($w, 'mode'), $list($w['users'] ?? null), $list($w['groups'] ?? null));
+    }
+
+    /** @param array<string,mixed> $w */
+    private static function groupFromWire(array $w, string $id): Group
+    {
+        $members = isset($w['members']) && is_array($w['members']) ? array_values(array_map('strval', array_filter($w['members'], 'is_scalar'))) : [];
+
+        return new Group(self::str($w, 'id') ?: $id, $members);
+    }
+
+    /** @return list<Recipient> */
+    private static function recipients(mixed $raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+        $out = [];
+        foreach ($raw as $r) {
+            $r = is_array($r) ? $r : [];
+            $id = self::str($r, 'message_id');
+            $out[] = new Recipient(
+                self::str($r, 'external_user_id'),
+                self::str($r, 'status'),
+                $id === '' ? null : $id,
+                self::int($r, 'devices'),
+                self::deliveries($r['deliveries'] ?? null),
+            );
+        }
+
+        return $out;
     }
 
     /** @return list<Delivery> */

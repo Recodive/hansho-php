@@ -12,11 +12,14 @@ use Recodive\Hansho\ActivityAlert;
 use Recodive\Hansho\ActivityStarted;
 use Recodive\Hansho\ActivityUpdate;
 use Recodive\Hansho\ActivityUpdated;
+use Recodive\Hansho\Audience;
+use Recodive\Hansho\AudienceMode;
 use Recodive\Hansho\Channel;
 use Recodive\Hansho\Delivery;
 use Recodive\Hansho\Exception\ApiException;
 use Recodive\Hansho\Feed;
 use Recodive\Hansho\FeedResult;
+use Recodive\Hansho\Group;
 use Recodive\Hansho\Hansho;
 use Recodive\Hansho\Level;
 use Recodive\Hansho\Message;
@@ -24,6 +27,7 @@ use Recodive\Hansho\MessageResult;
 use Recodive\Hansho\MessageStatus;
 use Recodive\Hansho\PageOptions;
 use Recodive\Hansho\PairingTicket;
+use Recodive\Hansho\Recipient;
 use Recodive\Hansho\SoundResult;
 
 /** Every operation and error of the shared sdk/spec/api.json. */
@@ -39,6 +43,7 @@ final class SpecTest extends TestCase
     private static function calls(): array
     {
         $ack = [new Action('ack', 'Acknowledge', true), new Action('reply', 'Reply', kind: 'text')];
+        $only = new Audience(AudienceMode::Only, ['alice'], ['oncall']);
 
         return [
             'createPairingTicket' => [fn (Hansho $c) => $c->createPairingTicket('user-42'),
@@ -77,6 +82,17 @@ final class SpecTest extends TestCase
             'updateActivity' => [fn (Hansho $c) => $c->updateActivity('act_1', new ActivityUpdate(['progress' => 0.6], 10, new ActivityAlert('Halfway', '60%'))), new ActivityUpdated('act_1', 3)],
             'endActivity' => [fn (Hansho $c) => $c->endActivity('act_1'), null],
             'putFeed' => [fn (Hansho $c) => $c->putFeed('uptime', new Feed('status', ['up' => true, 'ms' => 41], 'user-42', 'Uptime')), new FeedResult('uptime', 2)],
+            'putGroup' => [fn (Hansho $c) => $c->putGroup('oncall', ['alice', 'bob']), new Group('oncall', ['alice', 'bob'])],
+            'getGroup' => [fn (Hansho $c) => $c->getGroup('oncall'), new Group('oncall', ['alice', 'bob'])],
+            'deleteGroup' => [fn (Hansho $c) => $c->deleteGroup('oncall'), null],
+            'kick' => [fn (Hansho $c) => $c->kick('user-42'), null],
+            'putChannelWithAudience' => [fn (Hansho $c) => $c->putChannel('ops', new Channel('Operations', Level::Active, Level::Critical, audience: $only)), null],
+            'putFeedWithChannel' => [fn (Hansho $c) => $c->putFeed('uptime', new Feed('status', ['up' => true], channel: 'ops', audience: $only)), new FeedResult('uptime', 1)],
+            'sendToAudience' => [fn (Hansho $c) => $c->sendMessage(new Message(null, 'ops', 'Deploy done', 'v1.2.3 is live', toAudience: true)),
+                new MessageResult('', 'active', 0, '', [], [
+                    new Recipient('alice', 'queued', 'msg_7', 1, [new Delivery('dev_1', 'queued')]),
+                    new Recipient('carol', Recipient::NO_ACCESS),
+                ])],
         ];
     }
 
